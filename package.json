@@ -1,6 +1,6 @@
 {
   "name": "@nachi3d/drive-sync",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Single-active-device sync of an app snapshot to the user's Google Drive app folder (React Native / Expo).",
   "license": "UNLICENSED",
   "private": true,

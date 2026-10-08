@@ -70,7 +70,7 @@ is acceptable; two devices editing simultaneously is not a supported usage.
 ## Integrating into an app
 
 ```sh
-npm install github:nachi3d/drive-sync#v0.1.0
+npm install github:nachi3d/drive-sync#v0.1.1
 npx expo install @react-native-google-signin/google-signin
 ```
 
@@ -78,7 +78,9 @@ npx expo install @react-native-google-signin/google-signin
   without Firebase (it requires `iosUrlScheme`). Without options it expects a
   Firebase `google-services.json`, so do not add it on Android-only apps.
 - Native module → a **development build** (`eas build --profile development`),
-  not Expo Go.
+  not Expo Go. Importing the package is safe in Expo Go (the native module
+  is loaded only by `createDriveSync()` / `createGoogleAuth()`), so an app
+  can simply not create the sync there.
 - The package ships TypeScript sources. In Jest (jest-expo), let them be
   transformed:
 
