@@ -3,6 +3,13 @@
 All notable changes to this project are documented here
 (format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)).
 
+## [0.1.1] - 2026-10-08
+
+### Fixed
+- Importing the package no longer loads the Google sign-in native module;
+  it is loaded by `createGoogleAuth()` / `createDriveSync()` only. Apps that
+  also run in Expo Go (no native module) no longer crash at startup.
+
 ## [0.1.0] - 2026-10-08
 
 ### Added

@@ -1,7 +1,17 @@
-import { GoogleSignin, isErrorWithCode, statusCodes } from '@react-native-google-signin/google-signin';
-
 import { AuthError, DRIVE_APPDATA_SCOPE, type AuthAccount, type DriveAuth } from './auth';
 import { DriveError } from './drive';
+
+type GoogleSignInModule = typeof import('@react-native-google-signin/google-signin');
+
+/**
+ * Loaded on first use, not at import: the native module is missing in Expo
+ * Go, and importing it there throws. Apps can import this package anywhere
+ * and only call createGoogleAuth() in builds that include the module.
+ */
+function loadGoogleSignIn(): GoogleSignInModule {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('@react-native-google-signin/google-signin') as GoogleSignInModule;
+}
 
 export interface GoogleAuthOptions {
   /**
@@ -11,13 +21,15 @@ export interface GoogleAuthOptions {
   webClientId: string;
 }
 
-function toAuthError(error: unknown): AuthError {
-  if (isErrorWithCode(error)) return new AuthError(error.code, error.message);
-  return new AuthError('unknown', error instanceof Error ? error.message : String(error));
-}
-
 /** DriveAuth on @react-native-google-signin/google-signin, scope drive.appdata only. */
 export function createGoogleAuth({ webClientId }: GoogleAuthOptions): DriveAuth {
+  const { GoogleSignin, isErrorWithCode, statusCodes } = loadGoogleSignIn();
+
+  function toAuthError(error: unknown): AuthError {
+    if (isErrorWithCode(error)) return new AuthError(error.code, error.message);
+    return new AuthError('unknown', error instanceof Error ? error.message : String(error));
+  }
+
   GoogleSignin.configure({ webClientId, scopes: [DRIVE_APPDATA_SCOPE], offlineAccess: false });
 
   async function ensureScope(scopes: string[]): Promise<boolean> {
