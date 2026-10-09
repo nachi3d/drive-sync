@@ -76,4 +76,26 @@ describe('decide', () => {
     const remote = meta(5, 2);
     expect(decide({ remote, baseRev: 4, dirty: false, schemaVersion: 3 })).toEqual({ kind: 'import', remote });
   });
+
+  it('reports a conflict when the same rev points to another snapshot (raced upload overwritten)', () => {
+    const remote = meta(4);
+    for (const dirty of [true, false]) {
+      expect(decide({ remote, baseRev: 4, baseSnapshotId: 'mine-4', dirty, schemaVersion: 3 })).toEqual({
+        kind: 'conflict',
+        remote,
+      });
+    }
+  });
+
+  it('trusts the rev alone when the base snapshot is unknown (state from 0.1.x)', () => {
+    expect(decide({ remote: meta(4), baseRev: 4, baseSnapshotId: null, dirty: false, schemaVersion: 3 })).toEqual({
+      kind: 'noop',
+    });
+  });
+
+  it('does nothing when rev and snapshot both match', () => {
+    expect(decide({ remote: meta(4), baseRev: 4, baseSnapshotId: 'snap-4', dirty: false, schemaVersion: 3 })).toEqual({
+      kind: 'noop',
+    });
+  });
 });
