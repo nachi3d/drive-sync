@@ -41,9 +41,20 @@ Sync runs on startup (`start()`), 10 s after the last change (`notifyChange()`),
 when the app comes to the foreground and when it goes to the background.
 Offline is not an error: changes stay dirty and go up on the next sync.
 
-**Known limit:** Drive has no compare-and-swap. There is a short window between
-the second `meta.json` read and the write. For one active device at a time, that
-is acceptable; two devices editing simultaneously is not a supported usage.
+**Known limit (upload race):** Drive has no compare-and-swap. There is a
+short window between the second `meta.json` read and the write. If another
+device uploads inside it, the last writer wins on Drive. The loser finds out on
+its next sync: each device remembers the snapshot file of its base, so "same
+rev, other snapshot" means its upload was overwritten → **conflict** (scenario
+T-SYNC-11). Two gaps remain:
+
+- until the loser syncs again, Drive holds only the winner's data;
+- if the winner (or a third device) uploads again before that, the rev moves
+  on and the loser, clean, imports it. Its overwritten change survives only in
+  the app's `beforeImport` safety backup.
+
+For one active device at a time, that is acceptable; two devices editing
+simultaneously is not a supported usage.
 
 ## Google Cloud setup (once per Cloud project)
 
@@ -75,7 +86,7 @@ is acceptable; two devices editing simultaneously is not a supported usage.
 ## Integrating into an app
 
 ```sh
-npm install github:nachi3d/drive-sync#v0.1.1
+npm install github:nachi3d/drive-sync#v0.2.0
 npx expo install @react-native-google-signin/google-signin
 ```
 
@@ -97,6 +108,8 @@ npx expo install @react-native-google-signin/google-signin
 
   and mock `@react-native-google-signin/google-signin` in tests (or use the
   engine directly with `FakeDrive` / `FakeAuth` from `@nachi3d/drive-sync/testing`).
+- Run the shared two-device scenarios against the app's real adapter: one
+  contract test (see [Testing](#testing-two-device-scenarios)).
 
 ### Adapter
 
@@ -157,6 +170,57 @@ straight from the phone. There is no Nachi3D server, no account with us, and no
 analytics. The app asks for `drive.appdata` only: it cannot see or touch any
 other file in the user's Drive. The user can delete the data at any time:
 drive.google.com → Settings → *Manage apps* → the app → *Delete hidden app data*.
+
+## Testing: two-device scenarios
+
+`@nachi3d/drive-sync/testing` simulates one Drive app folder and several
+devices running the real engine:
+
+- `createSyncWorld({ app, latencyMs?, debounceMs?, keepSnapshots? })`: a
+  `FakeDrive` (`latencyMs`, `failWhen(op)` to inject errors, `beforeCall(op)`),
+  a `VirtualClock` (timestamps and the change debounce; `world.advance(ms)`)
+  and `world.device(name, { schemaVersionDelta?, app? })`.
+- Each device has its own sync storage, Google account, network switch
+  (`device.online = false`), conflict answer (`device.conflictAnswer`), and
+  records `conflicts`, `imports`, `safetyBackups`, `conflictCopies`.
+  `edit(label)` makes a change and calls `notifyChange()`; `foreground()` /
+  `background()` play the app-state triggers.
+- `syncScenarios`: the scenarios below, each named after its manual case.
+  The apps use the same `T-SYNC` ids in their `docs/TESTING.md`.
+
+| Id | Scenario |
+| --- | --- |
+| T-SYNC-02 | handoff A → B: B restores exactly what A uploaded |
+| T-SYNC-03 | back B → A: B's change reaches A on foreground, no prompt, safety backup first |
+| T-SYNC-04 | conflict: `onConflict` fired, nothing overwritten, sync paused; then keep local / keep remote / export both |
+| T-SYNC-05 | offline: change queued, uploaded when back online |
+| T-SYNC-07 | disconnect: the device's changes never reach Drive until it reconnects |
+| T-SYNC-11 | upload race: overwritten upload detected as a conflict on the next sync |
+| T-SYNC-12 | newer remote `schemaVersion`: refused, local data untouched |
+| T-SYNC-13 | rotation keeps the newest 5 per `appId`; another `appId` is never touched |
+
+Each app runs them with its **real** adapter in one contract test. The app
+factory gets `{ deviceName, storage, now }` and returns the adapter, a way to
+make one change, and a JSON-comparable view of the data:
+
+```ts
+import { syncScenarios, type AppFactory } from '@nachi3d/drive-sync/testing';
+
+const app: AppFactory = ({ deviceName, storage }) => {
+  const env = setupTestDb(); // a fresh database per device
+  return {
+    adapter: createMyAdapter({ ctx: env, storage, deviceName }),
+    edit: (label) => addPerson(env, label),
+    read: () => listEverything(env),
+  };
+};
+
+describe('Drive sync contract', () => {
+  it.each(syncScenarios.map((s) => [s.id, s.title, s] as const))('%s %s', (_id, _title, s) => s.run(app));
+});
+```
+
+The harness waits with real timers: do not combine it with jest fake timers.
 
 ## Development
 

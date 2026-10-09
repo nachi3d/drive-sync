@@ -29,6 +29,8 @@ interface PersistedState {
   connected: boolean;
   account: string | null;
   baseRev: number | null;
+  /** Snapshot file id of baseRev (tells a raced upload apart). */
+  baseSnapshotId: string | null;
   lastSyncedAt: string | null;
   lastSyncedFrom: string | null;
 }
@@ -160,6 +162,7 @@ export function createSyncEngine(options: SyncEngineOptions): DriveSync {
         connected: raw.connected === true,
         account: typeof raw.account === 'string' ? raw.account : null,
         baseRev: typeof raw.baseRev === 'number' ? raw.baseRev : null,
+        baseSnapshotId: typeof raw.baseSnapshotId === 'string' ? raw.baseSnapshotId : null,
         lastSyncedAt: typeof raw.lastSyncedAt === 'string' ? raw.lastSyncedAt : null,
         lastSyncedFrom: typeof raw.lastSyncedFrom === 'string' ? raw.lastSyncedFrom : null,
       };
@@ -242,7 +245,12 @@ export function createSyncEngine(options: SyncEngineOptions): DriveSync {
     if (latest === null) await drive.createFile(metaName, text);
     else await drive.updateFile(latest.fileId, text);
     await adapter.markSynced(rev);
-    const next = await save({ baseRev: rev, lastSyncedAt: meta.savedAt, lastSyncedFrom: meta.deviceName });
+    const next = await save({
+      baseRev: rev,
+      baseSnapshotId: file.id,
+      lastSyncedAt: meta.savedAt,
+      lastSyncedFrom: meta.deviceName,
+    });
     // Old snapshots are only housekeeping: a failure here must not fail the sync.
     await rotate(file.id).catch(() => undefined);
     setStatus({ ...syncedStatus(next), phase: 'idle' });
@@ -254,7 +262,12 @@ export function createSyncEngine(options: SyncEngineOptions): DriveSync {
     await adapter.beforeImport?.(meta);
     await adapter.importSnapshot(data, meta);
     await adapter.markSynced(meta.rev);
-    const next = await save({ baseRev: meta.rev, lastSyncedAt: now(), lastSyncedFrom: meta.deviceName });
+    const next = await save({
+      baseRev: meta.rev,
+      baseSnapshotId: meta.snapshotFileId,
+      lastSyncedAt: now(),
+      lastSyncedFrom: meta.deviceName,
+    });
     setStatus({ ...syncedStatus(next), phase: 'idle' });
   }
 
@@ -317,6 +330,7 @@ export function createSyncEngine(options: SyncEngineOptions): DriveSync {
       const decision = decide({
         remote: remote?.meta ?? null,
         baseRev: s.baseRev,
+        baseSnapshotId: s.baseSnapshotId,
         dirty,
         schemaVersion: adapter.schemaVersion,
       });
@@ -421,7 +435,9 @@ export function createSyncEngine(options: SyncEngineOptions): DriveSync {
         if (account === null) return false;
         // Another account means another Drive: forget the old base.
         const reset =
-          account.email !== s.account ? { baseRev: null, lastSyncedAt: null, lastSyncedFrom: null } : {};
+          account.email !== s.account
+            ? { baseRev: null, baseSnapshotId: null, lastSyncedAt: null, lastSyncedFrom: null }
+            : {};
         const next = await save({ ...reset, connected: true, account: account.email });
         setStatus({ ...syncedStatus(next), phase: 'idle', account: account.email });
         return true;
