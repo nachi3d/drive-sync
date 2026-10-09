@@ -66,6 +66,11 @@ is acceptable; two devices editing simultaneously is not a supported usage.
 4. **Web OAuth client** (one per project): type *Web application*, nothing to
    fill in. Its **client ID** is the `webClientId` below. It is public. **The
    client secret is never used and never goes into an app.**
+   - `webClientId` must be this **Web application** client's ID, **never the
+     Android client's ID** (the Android client is matched by package name +
+     SHA-1 and its ID goes nowhere in the app).
+   - Sign-in error **code 10 (`DEVELOPER_ERROR`)** = a mismatch: the SHA-1 of
+     the signing key, the package name, or the web client ID.
 
 ## Integrating into an app
 
