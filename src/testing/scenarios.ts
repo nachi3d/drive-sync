@@ -21,7 +21,7 @@ class ScenarioError extends Error {
   }
 }
 
-function check(condition: boolean, message: string): asserts condition {
+export function check(condition: boolean, message: string): asserts condition {
   if (!condition) throw new ScenarioError(message);
 }
 
@@ -30,7 +30,7 @@ function show(value: unknown): string {
   return text.length > 300 ? `${text.slice(0, 300)}…` : text;
 }
 
-function same(actual: unknown, expected: unknown, message: string): void {
+export function same(actual: unknown, expected: unknown, message: string): void {
   check(JSON.stringify(actual) === JSON.stringify(expected), `${message}\n  got:      ${show(actual)}\n  expected: ${show(expected)}`);
 }
 
@@ -39,7 +39,7 @@ function text(data: Snapshot): string {
 }
 
 /** Runs `body` in a fresh world and always disposes it. */
-async function inWorld(
+export async function inWorld(
   app: AppFactory,
   options: Omit<SyncWorldOptions, 'app'> | undefined,
   body: (world: SyncWorld) => Promise<void>,
@@ -53,7 +53,7 @@ async function inWorld(
 }
 
 /** Phone A uploads its data; Phone B restores it (T-SYNC-02). Both end in sync. */
-async function handoff(world: SyncWorld): Promise<{ a: SimulatedDevice; b: SimulatedDevice; appId: string }> {
+export async function handoff(world: SyncWorld): Promise<{ a: SimulatedDevice; b: SimulatedDevice; appId: string }> {
   const a = await world.device('Phone A');
   const appId = a.adapter.appId;
   await a.connect();

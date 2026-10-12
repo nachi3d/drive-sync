@@ -3,6 +3,29 @@
 All notable changes to this project are documented here
 (format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)).
 
+## [0.3.0] - 2026-10-12
+
+### Added
+- Attachments (book covers first): `adapter.attachments`
+  (`listLocalAttachments`, `readAttachment`, `writeAttachment`,
+  `referencedKeys`). Content-addressed files `<appId>.att.<sha256>.<ext>` in
+  the app folder, uploaded once after a snapshot upload (only those missing
+  on Drive), downloaded in the background after an import (checked against
+  their key, 3 at a time, retried, resumed after a restart).
+- Options `attachments: { maxBytes (1 MB), concurrency (3),
+  wifiOnlyDownloads, isWifi, gcIntervalMs (24 h) }`.
+- Clean-up of Drive attachments that none of the kept snapshots references.
+- `fetchAttachments()`, `status().attachments`, `sha256Hex()`.
+- Testing: `attachmentScenarios` (T-ATT-01…08), `attachmentContract` for app
+  adapters, `AppUnderTest.setAttachment`, device `attach()` / `attachment()` /
+  `wifi`, `world.remoteAttachments()`, `testBytes()`; `FakeDrive` listings
+  report file sizes.
+
+### Changed
+- `DriveFile` has an optional `size`; the REST listing asks for it.
+- `createMemoryApp()` entries can have a cover; its snapshot is
+  `{ entries, covers }` and `read()` returns that object.
+
 ## [0.2.0] - 2026-10-09
 
 ### Added

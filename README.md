@@ -19,6 +19,7 @@ this Google Cloud project):
 | --- | --- |
 | `<appId>.meta.json` | `{ rev, deviceId, deviceName, savedAt, appVersion, schemaVersion, snapshotFileId, encoding }` |
 | `<appId>.snapshot-<rev>.json` | the snapshot, as the app exported it. The newest 5 are kept. |
+| `<appId>.att.<sha256>.<ext>` | an attachment (e.g. a book cover), once per content. See [Attachments](#attachments). |
 
 > **Why the `<appId>` prefix:** the app folder belongs to the **Cloud
 > project**, not to the app. Every app that uses the same project sees the same
@@ -86,7 +87,7 @@ simultaneously is not a supported usage.
 ## Integrating into an app
 
 ```sh
-npm install github:nachi3d/drive-sync#v0.2.0
+npm install github:nachi3d/drive-sync#v0.3.0
 npx expo install @react-native-google-signin/google-signin
 ```
 
@@ -158,10 +159,72 @@ the sync state.
 | `notifyChange()` / `flush()` | debounced sync / run it now |
 | `peekRemote()` / `restoreFromDrive()` | new-phone restore |
 | `setConflictHandler(fn)` / `resolveConflict(choice)` | conflict UI |
+| `fetchAttachments()` | download missing attachments now (e.g. the network turned to Wi-Fi): `'done' \| 'pending' \| 'offline' \| 'waitingForWifi' \| 'disconnected'` |
 
 Phases: `disconnected`, `idle`, `syncing`, `offline`, `conflict`,
 `needsAppUpdate`, `error` (`error.code`: `auth` → offer to reconnect, `drive`,
 `app`).
+
+### Attachments
+
+Binary files the snapshot refers to (book covers first) travel next to it,
+**content-addressed**: the key of a file is the sha256 of its bytes, and the
+snapshot only lists keys (the app's JSON already does). On Drive each key is
+one file, `<appId>.att.<sha256>.<ext>`, so a cover is uploaded once, however
+many books and snapshots use it.
+
+```ts
+import { sha256Hex } from '@nachi3d/drive-sync';
+
+const adapter: SyncAdapter = {
+  // …
+  attachments: {
+    listLocalAttachments: () => covers.list(),          // { key, ext, size }[]
+    readAttachment: (key) => covers.read(key),          // Uint8Array
+    writeAttachment: (key, bytes, ext) => covers.write(key, bytes, ext),
+    referencedKeys: (snapshot) => coverKeysIn(String(snapshot)),
+  },
+};
+
+createDriveSync({
+  adapter, webClientId, storage,
+  attachments: {
+    maxBytes: 1024 * 1024,                     // default 1 MB
+    concurrency: 3,                            // default 3
+    wifiOnlyDownloads: () => settings.coversOnWifiOnly,
+    isWifi: async () => (await NetInfo.fetch()).type === 'wifi',
+  },
+});
+```
+
+- **Keys** are `sha256Hex(bytes)` (64 lowercase hex digits; the package
+  exports a pure-JS `sha256Hex`, Hermes has no `crypto.subtle`). Store
+  attachments under their key, so the same image on two books is one file.
+- **Upload:** after each successful snapshot upload, the attachments it
+  references that are on the device and not on Drive go up (one listing,
+  then a diff). If the network drops, they stay **unsent** and go up on the
+  next sync, even when there is no new snapshot.
+- **Download:** after an import (sync, restore, *keep remote*), the referenced
+  keys missing on the device are fetched **in the background**, 3 at a time;
+  every file is checked against its key before `writeAttachment()`. Failures
+  are retried after 5 s, 30 s and 2 min, then on the next sync; what arrived
+  stays (a restart resumes with what is left). Until a file is there, the app
+  shows its fallback (e.g. the placeholder cover).
+- **Wi-Fi only** (`wifiOnlyDownloads`, needs `isWifi`): downloads wait for
+  Wi-Fi; uploads do not. Call `fetchAttachments()` when the network changes.
+- **`maxBytes`:** a bigger attachment stays on its device (not uploaded, not
+  downloaded); other devices keep the fallback.
+- **Clean-up:** after an upload, at most once a day, attachments that none of
+  the kept 5 snapshots references are deleted from Drive (and duplicate copies
+  of one key). Every kept snapshot is read (once; they never change); if one
+  cannot be read, or another device uploaded meanwhile, nothing is deleted.
+- A sync never fails because of an attachment. `status().attachments` gives
+  `{ missing, unsent, tooLarge, transferring }` for the UI.
+
+**Known limit (clean-up race):** if another device uploads a snapshot that
+reuses an old attachment between this device's clean-up check and its delete,
+that attachment can be deleted. The next upload from a device that has the
+file sends it again; until then other devices show the fallback.
 
 ## Privacy
 
@@ -199,24 +262,53 @@ devices running the real engine:
 | T-SYNC-12 | newer remote `schemaVersion`: refused, local data untouched |
 | T-SYNC-13 | rotation keeps the newest 5 per `appId`; another `appId` is never touched |
 
+`attachmentScenarios` (apps with attachments; the app also implements
+`setAttachment(label, bytes, ext)`: the item `label` gets this attachment,
+created if needed):
+
+| Id | Scenario |
+| --- | --- |
+| T-ATT-01 | A adds a cover → B receives it; fallback (`missing: 1`) until it is there |
+| T-ATT-02 | the same cover on two books is stored once and never uploaded again |
+| T-ATT-03 | conflict → keep remote fetches the missing covers; keep local sends B's |
+| T-ATT-04 | clean-up keeps a cover while any kept snapshot references it; another `appId` untouched |
+| T-ATT-05 | offline: the cover goes up with the next upload; network lost after the snapshot: sent on the next sync |
+| T-ATT-06 | a failed download is retried in the background |
+| T-ATT-07 | Wi-Fi only: downloads wait for Wi-Fi, uploads do not |
+| T-ATT-08 | a cover over `maxBytes` stays on its device |
+
+`attachmentContract` checks the adapter on its own: keys are the sha256 of the
+bytes, sizes and extensions are right, `referencedKeys()` reads an exported
+snapshot, an import works before its attachments arrive, `writeAttachment()`
+then completes it. Devices also have `attach(label, bytes)`,
+`attachment(key)`, `wifi` and `attachmentWrites`; the world has
+`remoteAttachments(appId)` and an `attachments` option.
+
 Each app runs them with its **real** adapter in one contract test. The app
 factory gets `{ deviceName, storage, now }` and returns the adapter, a way to
 make one change, and a JSON-comparable view of the data:
 
 ```ts
-import { syncScenarios, type AppFactory } from '@nachi3d/drive-sync/testing';
+import { attachmentContract, attachmentScenarios, syncScenarios, type AppFactory } from '@nachi3d/drive-sync/testing';
 
 const app: AppFactory = ({ deviceName, storage }) => {
   const env = setupTestDb(); // a fresh database per device
   return {
     adapter: createMyAdapter({ ctx: env, storage, deviceName }),
     edit: (label) => addPerson(env, label),
+    setAttachment: (label, bytes, ext) => setCover(env, label, bytes, ext), // apps with attachments
     read: () => listEverything(env),
   };
 };
 
 describe('Drive sync contract', () => {
   it.each(syncScenarios.map((s) => [s.id, s.title, s] as const))('%s %s', (_id, _title, s) => s.run(app));
+});
+
+// Apps with attachments, and `setAttachment` in the factory's result:
+const attachmentChecks = [...attachmentScenarios, ...attachmentContract];
+describe('Drive attachments contract', () => {
+  it.each(attachmentChecks.map((s) => [s.id, s.title, s] as const))('%s %s', (_id, _title, s) => s.run(app));
 });
 ```
 

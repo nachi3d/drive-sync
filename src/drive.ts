@@ -3,6 +3,8 @@ import type { RemoteMeta, Snapshot, SnapshotEncoding } from './types';
 export interface DriveFile {
   id: string;
   name: string;
+  /** Size in bytes, when the listing reports it. */
+  size?: number;
 }
 
 /**
@@ -59,6 +61,37 @@ export function snapshotRev(appId: string, name: string): number | null {
   if (!name.startsWith(prefix) || !name.endsWith('.json')) return null;
   const rev = Number(name.slice(prefix.length, -'.json'.length));
   return Number.isInteger(rev) && rev > 0 ? rev : null;
+}
+
+export function attachmentPrefix(appId: string): string {
+  return `${appId}.att.`;
+}
+
+const KEY = /^[0-9a-f]{64}$/;
+const EXT = /^[a-z0-9]{1,10}$/;
+
+export function isAttachmentKey(key: string): boolean {
+  return KEY.test(key);
+}
+
+/** A safe extension for a Drive name: lowercase alphanumerics, 'bin' otherwise. */
+export function attachmentExt(ext: string): string {
+  const clean = ext.replace(/^\./, '').toLowerCase();
+  return EXT.test(clean) ? clean : 'bin';
+}
+
+/** `<appId>.att.<sha256>.<ext>` */
+export function attachmentFileName(appId: string, key: string, ext: string): string {
+  return `${attachmentPrefix(appId)}${key}.${attachmentExt(ext)}`;
+}
+
+/** Key and extension of an attachment file name of `appId`, or null if the name is not one. */
+export function parseAttachmentName(appId: string, name: string): { key: string; ext: string } | null {
+  const prefix = attachmentPrefix(appId);
+  if (!name.startsWith(prefix)) return null;
+  const [key, ext, ...rest] = name.slice(prefix.length).split('.');
+  if (key === undefined || ext === undefined || rest.length > 0 || !KEY.test(key) || !EXT.test(ext)) return null;
+  return { key, ext };
 }
 
 // ---------------------------------------------------------------- meta
@@ -166,13 +199,18 @@ export function createRestDrive(tokens: TokenSource, fetchFn: Fetch = fetch): Dr
         spaces: 'appDataFolder',
         q: `${q} and trashed = false`,
         orderBy: 'modifiedTime desc',
-        fields: 'nextPageToken, files(id, name)',
+        fields: 'nextPageToken, files(id, name, size)',
         pageSize: '100',
       });
       if (pageToken !== null) params.set('pageToken', pageToken);
       const response = await ok(await request(`${API}/files?${params.toString()}`), 'List files');
-      const body = (await response.json()) as { files?: DriveFile[]; nextPageToken?: string };
-      files.push(...(body.files ?? []));
+      const body = (await response.json()) as {
+        files?: { id: string; name: string; size?: string }[];
+        nextPageToken?: string;
+      };
+      for (const { id, name, size } of body.files ?? []) {
+        files.push(size === undefined ? { id, name } : { id, name, size: Number(size) });
+      }
       pageToken = body.nextPageToken ?? null;
     } while (pageToken !== null);
     return files;

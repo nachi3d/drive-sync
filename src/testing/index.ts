@@ -13,3 +13,5 @@ export {
 } from './harness';
 export { createMemoryApp, type MemoryAppOptions } from './memoryApp';
 export { syncScenarios, type SyncScenario } from './scenarios';
+export { attachmentScenarios, testBytes } from './attachmentScenarios';
+export { attachmentContract } from './contract';

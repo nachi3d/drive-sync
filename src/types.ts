@@ -51,7 +51,69 @@ export interface SyncAdapter {
   beforeImport?(meta: RemoteMeta): void | Promise<void>;
   /** Keeps both versions on the device ("export both" conflict choice). */
   saveConflictCopies?(copies: ConflictCopies): Promise<void>;
+  /** Binary files the snapshot refers to by key (e.g. book covers). */
+  attachments?: AttachmentAdapter;
 }
+
+/** A file kept on this device, as listLocalAttachments() reports it. */
+export interface AttachmentInfo {
+  /** sha256 of the bytes, 64 lowercase hex digits (`sha256Hex()`). */
+  key: string;
+  /** File extension without the dot, e.g. 'jpg'. */
+  ext: string;
+  /** Size in bytes. */
+  size: number;
+}
+
+/**
+ * Content-addressed attachments: the snapshot only lists keys, the bytes go
+ * to Drive as separate files, once per key.
+ */
+export interface AttachmentAdapter {
+  /** Every attachment stored on this device. */
+  listLocalAttachments(): AttachmentInfo[] | Promise<AttachmentInfo[]>;
+  readAttachment(key: string): Promise<Uint8Array>;
+  /** Stores a downloaded attachment (its key is already checked against the bytes). */
+  writeAttachment(key: string, bytes: Uint8Array, ext: string): Promise<void>;
+  /** Keys a snapshot refers to (one this app exported, possibly from an older schema). */
+  referencedKeys(snapshot: Snapshot): string[] | Promise<string[]>;
+}
+
+export interface AttachmentOptions {
+  /** Attachments larger than this stay on the device (not uploaded, not downloaded). Default 1 MB. */
+  maxBytes?: number;
+  /** Transfers in parallel. Default 3. */
+  concurrency?: number;
+  /**
+   * Download attachments only on Wi-Fi. A function is read before every
+   * download pass (a user setting). Needs `isWifi`.
+   */
+  wifiOnlyDownloads?: boolean | (() => boolean);
+  /** Whether the device is on Wi-Fi now (e.g. from NetInfo). */
+  isWifi?: () => boolean | Promise<boolean>;
+  /** Minimum time between two clean-ups of unreferenced attachments on Drive. Default 24 h. */
+  gcIntervalMs?: number;
+}
+
+export interface AttachmentStatus {
+  /** Referenced by the local data, not on this device yet (the app shows a fallback). */
+  missing: number;
+  /** On this device and referenced by the last upload, not on Drive yet. */
+  unsent: number;
+  /** Over `maxBytes`: neither uploaded nor downloaded. */
+  tooLarge: number;
+  /** An upload or download pass is running. */
+  transferring: boolean;
+}
+
+export type AttachmentFetchResult =
+  /** Every referenced attachment is on the device. */
+  | 'done'
+  /** Some are not yet on Drive, too large, or failed (retried later). */
+  | 'pending'
+  | 'offline'
+  | 'waitingForWifi'
+  | 'disconnected';
 
 export interface ConflictCopies {
   local: Snapshot;
@@ -107,6 +169,7 @@ export interface SyncStatus {
   remote: RemoteMeta | null;
   /** Set in 'error'. */
   error: { code: SyncErrorCode; message: string } | null;
+  attachments: AttachmentStatus;
 }
 
 export type SyncResult =
