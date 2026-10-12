@@ -1,6 +1,8 @@
-import { DriveError, metaFileName, parseMeta, snapshotPrefix, snapshotRev, type DriveFile, type DriveStore } from '../drive';
+import { DriveError, metaFileName, parseAttachmentName, parseMeta, snapshotPrefix, snapshotRev, type DriveFile, type DriveStore } from '../drive';
 import { createSyncEngine, DEFAULT_DEBOUNCE_MS, type DriveSync } from '../engine';
+import { sha256Hex } from '../sha256';
 import type {
+  AttachmentOptions,
   ConflictChoice,
   ConflictCopies,
   ConflictInfo,
@@ -29,6 +31,12 @@ export interface AppUnderTest {
   adapter: SyncAdapter;
   /** One local change as a user would make it; `label` is unique per call. */
   edit(label: string): void | Promise<void>;
+  /**
+   * For apps with attachments: gives the item `label` this attachment (e.g.
+   * the book `label` gets this cover), creating the item if needed. The app
+   * stores the bytes under their sha256 key.
+   */
+  setAttachment?(label: string, bytes: Uint8Array, ext: string): void | Promise<void>;
   /** The app's data in a JSON-comparable form: equal on two devices = same data. */
   read(): unknown | Promise<unknown>;
 }
@@ -44,6 +52,8 @@ export interface SyncWorldOptions {
   latencyMs?: number;
   /** Start time of the virtual clock. */
   start?: string;
+  /** Attachment options of every device (Wi-Fi is the device's `wifi` switch). */
+  attachments?: Omit<AttachmentOptions, 'isWifi'>;
 }
 
 export interface DeviceOptions {
@@ -113,6 +123,8 @@ export interface SimulatedDevice {
   readonly drive: DeviceDrive;
   /** Network on/off for this device only. */
   online: boolean;
+  /** On Wi-Fi (for `wifiOnlyDownloads`). Default true. */
+  wifi: boolean;
   /** What the conflict handler answers; null = decide later. */
   conflictAnswer: ConflictChoice | null;
   /** Every onConflict call. */
@@ -122,8 +134,14 @@ export interface SimulatedDevice {
   /** Every beforeImport (the app's safety backup). */
   readonly safetyBackups: RemoteMeta[];
   readonly conflictCopies: ConflictCopies[];
+  /** Every writeAttachment (downloaded attachment keys). */
+  readonly attachmentWrites: string[];
   /** A local change, then notifyChange() as the app does after a write. */
   edit(label: string): Promise<void>;
+  /** app.setAttachment(), then notifyChange(). Returns the attachment key. */
+  attach(label: string, bytes: Uint8Array, ext?: string): Promise<string>;
+  /** The attachment's bytes on this device, or null. */
+  attachment(key: string): Promise<Uint8Array | null>;
   read(): Promise<unknown>;
   /** Interactive sign-in without the automatic first sync. */
   connect(): Promise<void>;
@@ -150,6 +168,8 @@ export interface SyncWorld {
   remoteSnapshot(appId: string): string | null;
   /** Revs of the `appId` snapshot files on Drive, ascending. */
   snapshotRevs(appId: string): number[];
+  /** Keys of the `appId` attachment files on Drive, sorted (a key twice = two files). */
+  remoteAttachments(appId: string): string[];
   dispose(): void;
 }
 
@@ -188,7 +208,8 @@ export function createSyncWorld(options: SyncWorldOptions = {}): SyncWorld {
     let quiet = 0;
     for (let i = 0; i < 10_000; i++) {
       await tick();
-      quiet = busy === 0 && drive.inFlight === 0 ? quiet + 1 : 0;
+      const transferring = devices.some((d) => d.sync.status().attachments.transferring);
+      quiet = busy === 0 && drive.inFlight === 0 && !transferring ? quiet + 1 : 0;
       if (quiet >= 3) return;
     }
     throw new Error('settle(): sync work still running after 10000 turns');
@@ -207,6 +228,8 @@ export function createSyncWorld(options: SyncWorldOptions = {}): SyncWorld {
     const imports: RemoteMeta[] = [];
     const safetyBackups: RemoteMeta[] = [];
     const conflictCopies: ConflictCopies[] = [];
+    const attachmentWrites: string[] = [];
+    const realAttachments = real.attachments;
 
     // The app's adapter, recorded. Methods are called on `real` so class-based adapters work.
     const adapter: SyncAdapter = {
@@ -229,6 +252,15 @@ export function createSyncWorld(options: SyncWorldOptions = {}): SyncWorld {
         conflictCopies.push(copies);
         await real.saveConflictCopies?.(copies);
       },
+      attachments: realAttachments && {
+        listLocalAttachments: () => realAttachments.listLocalAttachments(),
+        readAttachment: (key) => realAttachments.readAttachment(key),
+        async writeAttachment(key, bytes, ext) {
+          attachmentWrites.push(key);
+          await realAttachments.writeAttachment(key, bytes, ext);
+        },
+        referencedKeys: (snapshot) => realAttachments.referencedKeys(snapshot),
+      },
     };
 
     const auth = new FakeAuth(deviceOptions.email ?? 'reader@example.com');
@@ -240,6 +272,7 @@ export function createSyncWorld(options: SyncWorldOptions = {}): SyncWorld {
       storage,
       debounceMs,
       keepSnapshots: options.keepSnapshots,
+      attachments: { ...options.attachments, isWifi: () => simulated.wifi },
       now: () => clock.now(),
       newDeviceId: () => `device-${name}`,
       timers: clock,
@@ -258,6 +291,7 @@ export function createSyncWorld(options: SyncWorldOptions = {}): SyncWorld {
       syncNow: () => track(engine.syncNow()),
       flush: () => track(engine.flush()),
       peekRemote: () => track(engine.peekRemote()),
+      fetchAttachments: () => track(engine.fetchAttachments()),
       restoreFromDrive: () => track(engine.restoreFromDrive()),
       resolveConflict: (choice) => track(engine.resolveConflict(choice)),
     };
@@ -276,14 +310,27 @@ export function createSyncWorld(options: SyncWorldOptions = {}): SyncWorld {
       set online(value: boolean) {
         deviceDrive.online = value;
       },
+      wifi: true,
       conflictAnswer: null,
       conflicts,
       imports,
       safetyBackups,
       conflictCopies,
+      attachmentWrites,
       async edit(label) {
         await app.edit(label);
         engine.notifyChange();
+      },
+      async attach(label, bytes, ext = 'jpg') {
+        if (app.setAttachment === undefined) throw new Error(`${name}: the app has no setAttachment()`);
+        await app.setAttachment(label, bytes, ext);
+        engine.notifyChange();
+        return sha256Hex(bytes);
+      },
+      async attachment(key) {
+        if (realAttachments === undefined) return null;
+        const local = await realAttachments.listLocalAttachments();
+        return local.some((a) => a.key === key) ? realAttachments.readAttachment(key) : null;
       },
       async read() {
         return app.read();
@@ -321,6 +368,12 @@ export function createSyncWorld(options: SyncWorldOptions = {}): SyncWorld {
         .map((f) => snapshotRev(appId, f.name))
         .filter((rev): rev is number => rev !== null)
         .sort((a, b) => a - b);
+    },
+    remoteAttachments(appId) {
+      return [...drive.files.values()]
+        .map((f) => parseAttachmentName(appId, f.name)?.key)
+        .filter((key): key is string => key !== undefined)
+        .sort();
     },
     dispose() {
       for (const d of devices) d.sync.dispose();

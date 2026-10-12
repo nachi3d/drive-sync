@@ -1,5 +1,12 @@
 import { DriveError } from '../drive';
-import { createMemoryApp, createSyncWorld, syncScenarios, VirtualClock } from '../testing';
+import {
+  attachmentContract,
+  attachmentScenarios,
+  createMemoryApp,
+  createSyncWorld,
+  syncScenarios,
+  VirtualClock,
+} from '../testing';
 
 describe('two-device scenarios (memory app)', () => {
   it.each(syncScenarios.map((s) => [s.id, s.title, s] as const))('%s %s', async (_id, _title, scenario) => {
@@ -9,6 +16,20 @@ describe('two-device scenarios (memory app)', () => {
 
 describe('two-device scenarios with Drive latency', () => {
   it.each(syncScenarios.map((s) => [s.id, s.title, s] as const))('%s %s', async (_id, _title, scenario) => {
+    await scenario.run(createMemoryApp(), { latencyMs: 1 });
+  });
+});
+
+const withAttachments = [...attachmentScenarios, ...attachmentContract];
+
+describe('attachment scenarios (memory app)', () => {
+  it.each(withAttachments.map((s) => [s.id, s.title, s] as const))('%s %s', async (_id, _title, scenario) => {
+    await scenario.run(createMemoryApp());
+  });
+});
+
+describe('attachment scenarios with Drive latency', () => {
+  it.each(attachmentScenarios.map((s) => [s.id, s.title, s] as const))('%s %s', async (_id, _title, scenario) => {
     await scenario.run(createMemoryApp(), { latencyMs: 1 });
   });
 });

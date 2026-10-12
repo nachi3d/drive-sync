@@ -6,9 +6,16 @@ import { createGoogleAuth } from './google';
 import { attachAppStateTriggers } from './triggers';
 
 export * from './types';
+export {
+  ATTACHMENT_RETRY_DELAYS_MS,
+  DEFAULT_ATTACHMENT_CONCURRENCY,
+  DEFAULT_ATTACHMENT_GC_INTERVAL_MS,
+  DEFAULT_MAX_ATTACHMENT_BYTES,
+} from './attachments';
 export { AuthError, DRIVE_APPDATA_SCOPE, type AuthAccount, type DriveAuth } from './auth';
 export { decide, type Decision, type DecideInput } from './decide';
 export {
+  attachmentFileName,
   createRestDrive,
   DriveError,
   metaFileName,
@@ -29,6 +36,7 @@ export {
 } from './engine';
 export { createGoogleAuth, type GoogleAuthOptions } from './google';
 export { useSyncStatus } from './react';
+export { sha256Hex } from './sha256';
 export { attachAppStateTriggers, type AppStateLike } from './triggers';
 
 export interface DriveSyncOptions extends Omit<SyncEngineOptions, 'auth' | 'drive'> {

@@ -2,6 +2,10 @@ import type { AuthAccount, DriveAuth } from '../auth';
 import { DriveError, type DriveFile, type DriveStore } from '../drive';
 import type { KeyValueStorage, Snapshot, SnapshotEncoding } from '../types';
 
+function contentSize(content: Snapshot): number {
+  return typeof content === 'string' ? new TextEncoder().encode(content).length : content.length;
+}
+
 /**
  * In-memory Drive app folder for tests. Shared by several engines to play
  * several devices. `offline` makes every call fail like a dead network;
@@ -74,7 +78,9 @@ export class FakeDrive implements DriveStore {
 
   listFiles(prefix: string): Promise<DriveFile[]> {
     return this.run(`list:${prefix}`, () =>
-      [...this.files.entries()].filter(([, f]) => f.name.startsWith(prefix)).map(([id, f]) => ({ id, name: f.name })),
+      [...this.files.entries()]
+        .filter(([, f]) => f.name.startsWith(prefix))
+        .map(([id, f]) => ({ id, name: f.name, size: contentSize(f.content) })),
     );
   }
 

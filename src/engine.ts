@@ -1,3 +1,4 @@
+import { createAttachmentSync, NO_ATTACHMENTS, type AttachmentSync } from './attachments';
 import { AuthError, type DriveAuth } from './auth';
 import { decide } from './decide';
 import {
@@ -7,9 +8,12 @@ import {
   snapshotFileName,
   snapshotPrefix,
   snapshotRev,
+  type DriveFile,
   type DriveStore,
 } from './drive';
 import type {
+  AttachmentFetchResult,
+  AttachmentOptions,
   ConflictChoice,
   ConflictHandler,
   KeyValueStorage,
@@ -50,6 +54,8 @@ export interface SyncEngineOptions {
   debounceMs?: number;
   /** Snapshots kept on Drive, newest first. Default 5. */
   keepSnapshots?: number;
+  /** Limits and network policy for `adapter.attachments`. */
+  attachments?: AttachmentOptions;
   /** UTC ISO timestamp. */
   now?: () => string;
   newDeviceId?: () => string;
@@ -84,6 +90,12 @@ export interface DriveSync {
   /** Applies the user's choice for the pending conflict. */
   resolveConflict(choice: ConflictChoice): Promise<SyncResult>;
   setConflictHandler(handler: ConflictHandler | null): void;
+  /**
+   * Downloads the attachments the local data references and this device lacks
+   * (e.g. when the network turns to Wi-Fi). Also runs by itself after imports
+   * and syncs.
+   */
+  fetchAttachments(): Promise<AttachmentFetchResult>;
   /** Cancels timers and listeners. */
   dispose(): void;
 }
@@ -136,6 +148,7 @@ export function createSyncEngine(options: SyncEngineOptions): DriveSync {
     lastSyncedFrom: null,
     remote: null,
     error: null,
+    attachments: NO_ATTACHMENTS,
   };
 
   function setStatus(patch: Partial<SyncStatus>): void {
@@ -185,6 +198,27 @@ export function createSyncEngine(options: SyncEngineOptions): DriveSync {
     return next;
   }
 
+  // ------------------------------------------------------------ attachments
+
+  const attachments: AttachmentSync | null = adapter.attachments
+    ? createAttachmentSync({
+        ...options.attachments,
+        adapter: adapter.attachments,
+        appId: adapter.appId,
+        drive,
+        storage,
+        timers,
+        now,
+        active: () => !disposed && saved?.connected === true,
+        onStatus: (value) => setStatus({ attachments: value }),
+      })
+    : null;
+
+  /** Attachments never fail a sync: what did not go through is retried later. */
+  async function quietly(fn: (a: AttachmentSync) => Promise<void>): Promise<void> {
+    if (attachments !== null) await fn(attachments).catch(() => undefined);
+  }
+
   // ------------------------------------------------------------ lock
 
   // Every Drive operation runs one at a time, in call order.
@@ -205,13 +239,15 @@ export function createSyncEngine(options: SyncEngineOptions): DriveSync {
     return { meta: parseMeta(text, adapter.appId), fileId: file.id };
   }
 
-  async function rotate(keepFileId: string): Promise<void> {
+  /** Deletes all but the newest snapshots; returns the snapshot files left. */
+  async function rotate(keepFileId: string): Promise<DriveFile[]> {
     const files = (await drive.listFiles(snapshotPrefix(adapter.appId)))
       .map((file) => ({ file, rev: snapshotRev(adapter.appId, file.name) }))
       .filter((entry): entry is { file: typeof entry.file; rev: number } => entry.rev !== null)
       .sort((a, b) => b.rev - a.rev);
-    const stale = files.slice(keepSnapshots).filter((entry) => entry.file.id !== keepFileId);
+    const stale = new Set(files.slice(keepSnapshots).filter((entry) => entry.file.id !== keepFileId));
     for (const { file } of stale) await drive.deleteFile(file.id);
+    return files.filter((entry) => !stale.has(entry)).map((entry) => entry.file);
   }
 
   /**
@@ -251,8 +287,18 @@ export function createSyncEngine(options: SyncEngineOptions): DriveSync {
       lastSyncedAt: meta.savedAt,
       lastSyncedFrom: meta.deviceName,
     });
-    // Old snapshots are only housekeeping: a failure here must not fail the sync.
-    await rotate(file.id).catch(() => undefined);
+    await quietly((a) => a.afterUpload(data, file.id));
+    // Old snapshots and attachments are only housekeeping: a failure here must not fail the sync.
+    const kept = await rotate(file.id).catch(() => null);
+    if (kept !== null) {
+      await quietly((a) =>
+        a.collectGarbage({
+          kept,
+          encoding: meta.encoding,
+          stillCurrent: async () => (await readMeta())?.meta.snapshotFileId === file.id,
+        }),
+      );
+    }
     setStatus({ ...syncedStatus(next), phase: 'idle' });
     return 'uploaded';
   }
@@ -268,6 +314,7 @@ export function createSyncEngine(options: SyncEngineOptions): DriveSync {
       lastSyncedAt: now(),
       lastSyncedFrom: meta.deviceName,
     });
+    await quietly((a) => a.afterImport(data, meta.snapshotFileId));
     setStatus({ ...syncedStatus(next), phase: 'idle' });
   }
 
@@ -336,6 +383,7 @@ export function createSyncEngine(options: SyncEngineOptions): DriveSync {
       });
       switch (decision.kind) {
         case 'noop':
+          await quietly((a) => a.resume());
           setStatus({ ...syncedStatus(s), phase: 'idle' });
           return 'unchanged';
         case 'upload':
@@ -438,6 +486,7 @@ export function createSyncEngine(options: SyncEngineOptions): DriveSync {
           account.email !== s.account
             ? { baseRev: null, baseSnapshotId: null, lastSyncedAt: null, lastSyncedFrom: null }
             : {};
+        if (account.email !== s.account) await quietly((a) => a.reset());
         const next = await save({ ...reset, connected: true, account: account.email });
         setStatus({ ...syncedStatus(next), phase: 'idle', account: account.email });
         return true;
@@ -448,6 +497,7 @@ export function createSyncEngine(options: SyncEngineOptions): DriveSync {
 
     disconnect() {
       cancelDebounce();
+      attachments?.cancel();
       return exclusive(async () => {
         await auth.signOut().catch(() => undefined);
         await save({ connected: false });
@@ -522,9 +572,16 @@ export function createSyncEngine(options: SyncEngineOptions): DriveSync {
       if (handler !== null) askConflict();
     },
 
+    async fetchAttachments() {
+      if (attachments === null) return 'done';
+      await state();
+      return attachments.fetchMissing();
+    },
+
     dispose() {
       disposed = true;
       cancelDebounce();
+      attachments?.cancel();
       listeners.clear();
     },
   };
