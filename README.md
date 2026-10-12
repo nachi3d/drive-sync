@@ -316,12 +316,14 @@ The harness waits with real timers: do not combine it with jest fake timers.
 
 ## Backlog
 
-- **Attachment clean-up grace period:** delete an unreferenced attachment
+Not implemented yet: these are planned changes, not current behaviour.
+
+- **Planned: attachment clean-up grace period.** Delete an unreferenced attachment
   only once it has been unreferenced for at least 7 days. Track when each key
   was first seen unreferenced in a small `<appId>.gc.json` in the app folder,
   so that the clean-up race (see [Attachments](#attachments)) needs a device
   to reuse a cover after a week, not within seconds.
-- **"Export both" keeps the other side's covers:** during a conflict, also
+- **Planned: "export both" keeps the other side's covers.** During a conflict, also
   download the attachments the remote snapshot references, so the saved
   remote copy is complete on the device.
 
